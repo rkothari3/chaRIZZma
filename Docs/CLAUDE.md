@@ -69,3 +69,9 @@ python audio_only.py
 - USB camera accessible as device 0
 - Audio input device accessible as `hw:1,0`
 - Linux environment with `arecord` utility installed
+
+
+## For when the audio things starts tripping (ignore at most times)
+// To clean
+sudo lsof /dev/snd/*
+pulseaudio --kill
