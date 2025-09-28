@@ -1,6 +1,6 @@
 """
-Video Sentiment Analysis with Gemini LIVE API
-Combines Pi's video + audio streams for facial emotion recognition
+Wingman AI with Gemini LIVE API
+Listens to conversations and gives real-time advice on what to say
 """
 
 import asyncio
@@ -50,16 +50,65 @@ client = genai.Client(api_key=GOOGLE_API_KEY, http_options={"api_version": "v1be
 
 CONFIG = {
     "response_modalities": ["AUDIO"],
-    "system_instruction": """You are an empathetic AI assistant that can see and hear the user. 
-    Analyze their facial expressions, body language, and voice tone to understand their emotional state.
-    Respond with appropriate emotional intelligence - be supportive if they seem sad, 
-    celebratory if happy, calming if stressed, etc. 
-    Keep responses under 8 seconds and always acknowledge what you observe about their mood."""
+    "system_instruction": """You are WINGMAN AI — a real-time conversation companion. 
+Your purpose is to whisper short, natural, and context-aware suggestions to help the user keep a conversation flowing. 
+You listen to both the other person’s speech and their facial/body cues, and then provide a quick, specific suggestion for what the user could say or do next.
+
+🎯 CORE RULES:
+- Always be brief (one clear suggestion under 10 seconds of speech).
+- Tailor advice to the other person’s interests, tone, and expressions.
+- Sound natural, like a supportive friend whispering in your ear.
+- Focus on *helping the user connect* (not manipulate).
+- Avoid generic filler like “that’s cool” — always be specific.
+- If the other person seems uncomfortable, suggest a kind, empathetic pivot.
+- When a person doesn't say anything but his facial expressions are strong, ask them accordingly if appropriate.
+
+📌 GENERAL STRATEGIES:
+- If they share an interest → Suggest a question or story related to it.
+- If they look excited → Encourage building on their excitement.
+- If they seem bored → Suggest shifting to a fresher or related topic.
+- If they look confused or sad → Suggest checking in kindly.
+- If conversation stalls → Bring back an earlier topic or suggest something neutral (food, hobbies, weekend, etc.).
+
+💡 EXAMPLES BY CONTEXT
+
+[FRIENDLY / CASUAL]
+- If they mention Harry Potter → “Ask what their favorite Harry Potter book or movie is.”
+- If they talk about travel → “Ask the coolest place they’ve been.”
+- If they smile about music → “Ask if they’ve been to a concert recently.”
+
+[ROMANTIC / FLIRTY]
+- If she laughs at your joke → “Say you’re glad you made her laugh.”
+- If she mentions food → “Ask her favorite restaurant nearby.”
+- If she seems shy → “Share a light personal story so she feels comfortable.”
+
+[MENTAL HEALTH / EMPATHY]
+- If they look sad or withdrawn → “Gently ask if everything’s okay.”
+- If they sound stressed → “Offer a supportive comment like, ‘That sounds tough, want to talk about it?’”
+- If they’re quiet → “Suggest a light topic to ease the mood, like favorite movies or pets.”
+
+[PROFESSIONAL / NETWORKING]
+- If they mention a project → “Ask what inspired them to start it.”
+- If they talk about work → “Ask what their favorite part of the job is.”
+- If they mention school → “Ask about their major or future goals.”
+
+[WHEN CONVERSATION IS DYING]
+- “Bring back something they mentioned earlier.”
+- “Switch to a safe, universal topic like weekend plans, hobbies, or food.”
+
+[WHEN EXPRESSIONS CONTRADICT WORDS]
+- If they say they’re fine but look upset → “Ask gently, ‘Are you sure? You seem a bit down.’”
+- If they talk about a success but look uncertain → “Congratulate them and encourage them to share more.”
+
+---
+
+Keep responses SHORT, SPECIFIC, and CONTEXTUAL — like a whispering wingman who helps the user notice cues they might miss. 
+Never explain *why* you’re suggesting something, just give the suggestion itself."""
 }
 
 pya = pyaudio.PyAudio()
 
-class VideoSentimentAI:
+class WingmanAI:
     def __init__(self):
         self.pi_video_url = f"http://{PI_IP}:5000/video_feed"
         self.pi_audio_url = f"http://{PI_IP}:5001/audio_feed"
@@ -76,30 +125,40 @@ class VideoSentimentAI:
         # Control flags
         self.is_running = False
         
-    def capture_frame_from_pi_stream(self):
-        """Capture a single frame from Pi's video stream"""
+    async def capture_video_frame_from_pi(self):
+        """Capture a single video frame from Pi"""
+        print("📹 Attempting to capture video frame from Pi...")
+        
         try:
-            # Get a single frame from the MJPEG stream
-            response = requests.get(self.pi_video_url, stream=True, timeout=5)
+            # Connect to Pi's MJPEG stream
+            response = requests.get(self.pi_video_url, stream=True, timeout=10)
             if response.status_code != 200:
                 print(f"❌ Can't connect to Pi video stream")
                 return None
             
-            # Parse MJPEG stream to extract one frame
             bytes_data = b""
+            
+            # Parse MJPEG stream to get one frame
             for chunk in response.iter_content(chunk_size=1024):
                 bytes_data += chunk
                 
-                # Look for JPEG frame boundaries
-                start = bytes_data.find(b'\xff\xd8')  # JPEG start marker
-                end = bytes_data.find(b'\xff\xd9')    # JPEG end marker
+                # Look for complete JPEG frame
+                start = bytes_data.find(b'\xff\xd8')  # JPEG start
+                end = bytes_data.find(b'\xff\xd9')    # JPEG end
                 
                 if start != -1 and end != -1:
                     # Extract complete JPEG frame
                     jpeg_bytes = bytes_data[start:end+2]
                     
-                    # Convert to image and process
-                    return self.process_frame_for_gemini(jpeg_bytes)
+                    # Process frame for Gemini
+                    frame_data = await asyncio.to_thread(
+                        self.process_frame_for_gemini, jpeg_bytes
+                    )
+                    
+                    if frame_data:
+                        print("✅ Video frame captured and queued")
+                        return frame_data
+                    break
             
             return None
             
@@ -133,44 +192,14 @@ class VideoSentimentAI:
             print(f"❌ Frame processing error: {e}")
             return None
     
-    async def capture_pi_streams(self):
-        """Capture both video and audio from Pi streams - manual trigger"""
-        try:
-            print("📹 Attempting to capture video frame from Pi...")
-            
-            # Try to get video frame (optional - continue if fails)
-            video_frame = await asyncio.to_thread(self.capture_frame_from_pi_stream)
-            if video_frame:
-                await self.out_queue.put(video_frame)
-                print("✅ Video frame captured and queued")
-            else:
-                print("⚠️ Video capture failed - continuing with audio-only analysis")
-                print("💡 Make sure Pi's video stream is running: python usb_cam_stream.py")
-            
-            print("🎤 Capturing 4 seconds of audio from Pi...")
-            
-            # Get audio chunk (required for analysis)
-            audio_data = await self.capture_audio_chunk_from_pi()
-            if audio_data:
-                await self.out_queue.put({
-                    "data": audio_data, 
-                    "mime_type": "audio/pcm"
-                })
-                print("✅ Audio captured and queued")
-                return True  # Success - at least have audio
-            else:
-                print("❌ Failed to capture audio - cannot proceed")
-                return False  # Failure - need at least audio
-                
-        except Exception as e:
-            print(f"❌ Stream capture error: {e}")
-            return False
-    
-    async def capture_audio_chunk_from_pi(self, duration=4):
-        """Capture audio chunk from Pi (adapted from turn_based_audio_ai.py)"""
+    async def capture_audio_from_pi(self, duration=4):
+        """Capture audio from Pi for specified duration"""
+        print(f"🎤 Capturing {duration} seconds of audio from Pi...")
+        
         try:
             response = requests.get(self.pi_audio_url, stream=True, timeout=10)
             if response.status_code != 200:
+                print("❌ Can't connect to Pi audio stream")
                 return None
             
             bytes_needed = SEND_SAMPLE_RATE * CHANNELS * 2 * duration
@@ -195,33 +224,47 @@ class VideoSentimentAI:
                     if time.time() - start_time > duration + 2:
                         break
             
-            return audio_data[:bytes_needed]
+            final_audio = audio_data[:bytes_needed]
+            if len(final_audio) > 0:
+                print("✅ Audio captured and queued")
+                return final_audio
+            return None
             
         except Exception as e:
             print(f"❌ Audio capture error: {e}")
             return None
     
-    async def send_realtime(self):
-        """Send captured data to Gemini (using official API method)"""
-        while self.is_running:
-            try:
-                msg = await asyncio.wait_for(self.out_queue.get(), timeout=1.0)
+    
+    async def send_captured_data(self, video_data, audio_data):
+        """Send captured video and audio data to Gemini using correct API"""
+        try:
+            from google.genai import types
+            import base64
+            
+            # Send video frame first if available
+            if video_data:
+                # Convert base64 string back to bytes
+                image_bytes = base64.b64decode(video_data["data"])
+                await self.session.send_realtime_input(
+                    media=types.Blob(
+                        data=image_bytes,
+                        mime_type=video_data["mime_type"]
+                    )
+                )
+                print("📤 Video frame sent to Gemini")
+            
+            # Send audio data if available  
+            if audio_data:
+                await self.session.send_realtime_input(
+                    audio=types.Blob(
+                        data=audio_data, 
+                        mime_type="audio/pcm;rate=16000"
+                    )
+                )
+                print("📤 Audio sent to Gemini")
                 
-                # Use the same method as official example - session.send with input parameter
-                await self.session.send(input=msg)
-                
-                # Log what was sent based on message type
-                if msg.get("mime_type") == "audio/pcm":
-                    print("📤 Audio sent to Gemini")
-                elif msg.get("mime_type") == "image/jpeg":
-                    print("📤 Image sent to Gemini") 
-                else:
-                    print(f"📤 Data sent to Gemini: {msg.get('mime_type', 'unknown')}")
-                    
-            except asyncio.TimeoutError:
-                continue
-            except Exception as e:
-                print(f"❌ Send error: {e}")
+        except Exception as e:
+            print(f"❌ Send error: {e}")
     
     async def receive_audio(self):
         """Receive audio responses from Gemini (from official example)"""
@@ -234,7 +277,8 @@ class VideoSentimentAI:
                         print("🎵", end="")
                         continue
                     if text := response.text:
-                        print(f"\n🤖 Sentiment Analysis: {text}")
+                        print(f"\n🗣️ Wingman AI: {text}")
+                        print(f"{'─'*50}")
                 
                 # Clear queue on turn complete
                 while not self.audio_in_queue.empty():
@@ -264,68 +308,72 @@ class VideoSentimentAI:
             except Exception as e:
                 print(f"❌ Playback error: {e}")
     
-    async def manual_sentiment_analysis(self):
-        """Manual trigger for video + audio sentiment analysis"""
-        print("🚀 Video Sentiment AI Started!")
-        print("📹 Analyzes your face + voice for emotional state")
-        print("🔑 Press ENTER to capture video + audio for analysis")
+    async def wingman_analysis_session(self):
+        """Button-triggered wingman analysis session"""
+        print("🚀 Wingman AI Started!")
+        print("📹 Listens to conversations and gives you things to say")
+        print("🔑 Press ENTER during conversation to get wingman advice")
         print("🛑 Type 'q' to quit\n")
         
-        analysis_number = 1
+        advice_count = 0
         
         try:
-            async with (
-                client.aio.live.connect(model=MODEL, config=CONFIG) as session,
-                asyncio.TaskGroup() as tg,
-            ):
+            async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
                 self.session = session
                 self.is_running = True
                 
-                # Initialize queues
+                # Initialize audio queue for playback
                 self.audio_in_queue = asyncio.Queue()
-                self.out_queue = asyncio.Queue(maxsize=10)
                 
-                # Start background tasks
-                tg.create_task(self.send_realtime())
-                tg.create_task(self.receive_audio())
-                tg.create_task(self.play_audio())
-                
-                # Manual trigger loop
-                while True:
-                    print(f"\n{'='*60}")
-                    print(f"🎭 SENTIMENT ANALYSIS #{analysis_number}")
-                    print(f"{'='*60}")
+                # Start background tasks for audio playback and response handling
+                async with asyncio.TaskGroup() as tg:
+                    tg.create_task(self.receive_audio())
+                    tg.create_task(self.play_audio())
                     
-                    user_input = await asyncio.to_thread(
-                        input, 
-                        "👆 Press ENTER to analyze your mood (or 'q' to quit): "
-                    )
+                    # Main interaction loop
+                    while self.is_running:
+                        advice_count += 1
+                        print(f"\n{'='*60}")
+                        print(f"🎯 WINGMAN ADVICE #{advice_count}")
+                        print(f"{'='*60}")
+                        
+                        # Wait for user input
+                        user_input = await asyncio.to_thread(
+                            input, "👆 Press ENTER to get conversation advice (or 'q' to quit): "
+                        )
+                        
+                        if user_input.lower() == 'q':
+                            print("👋 Thanks for using Wingman AI!")
+                            break
+                        
+                        print("📸 Capturing conversation + analyzing what to say...")
+                        
+                        # Capture video and audio concurrently
+                        video_task = asyncio.create_task(self.capture_video_frame_from_pi())
+                        audio_task = asyncio.create_task(self.capture_audio_from_pi(duration=4))
+                        
+                        # Wait for both captures to complete
+                        video_data = await video_task  
+                        audio_data = await audio_task
+                        
+                        if video_data or audio_data:
+                            print("🧠 Your wingman is analyzing the conversation...")
+                            print("🔊 Listen for what to say next!")
+                            
+                            # Send captured data to Gemini
+                            await self.send_captured_data(video_data, audio_data)
+                        else:
+                            print("❌ Failed to capture conversation data")
                     
-                    if user_input.lower() == 'q':
-                        break
-                    
-                    # Capture both video and audio
-                    print("📸 Capturing video + audio for sentiment analysis...")
-                    success = await self.capture_pi_streams()
-                    
-                    if not success:
-                        print("❌ Could not capture streams - skipping this analysis")
-                        continue
-                    
-                    print("🧠 Gemini is analyzing your emotional state...")
-                    print("🔊 Listen for the empathetic response!")
-                    
-                    # Wait a moment for processing
-                    await asyncio.sleep(5)  # Give more time for processing
-                    analysis_number += 1
-                
-                self.is_running = False
+                    self.is_running = False
                 
         except KeyboardInterrupt:
-            print("\n🛑 Sentiment analysis stopped")
+            print("\n🛑 Wingman session ended")
+            self.is_running = False
         except Exception as e:
             print(f"❌ Error: {e}")
             traceback.print_exc()
+            self.is_running = False
 
 async def main():
     # Check if required packages are installed
@@ -336,8 +384,8 @@ async def main():
         print("pip install opencv-python pillow")
         return
     
-    ai = VideoSentimentAI()
-    await ai.manual_sentiment_analysis()
+    ai = WingmanAI()
+    await ai.wingman_analysis_session()
 
 if __name__ == "__main__":
     asyncio.run(main())
