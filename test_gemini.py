@@ -6,7 +6,7 @@ from google import genai
 
 async def test_gemini_connection():
     # Replace with your actual API key
-    API_KEY = "AIzaSyC9_QNT5xBMh3s8BySrI7EAqu6DgdFYDLM"
+    API_KEY = ""
     
     client = genai.Client(api_key=API_KEY)
     model = "gemini-live-2.5-flash-preview"  # This model supports text output
